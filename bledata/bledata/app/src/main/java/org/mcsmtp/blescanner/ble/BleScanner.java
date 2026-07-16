@@ -1,0 +1,193 @@
+package org.mcsmtp.blescanner.ble;
+
+import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
+import android.content.Context;
+import android.util.Log;
+
+import org.mcsmtp.blescanner.WebSocketManager;
+import org.mcsmtp.blescanner.data.BeaconDevice;
+import org.mcsmtp.blescanner.data.RssiPoint;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+/**
+ * BLE 스캔 + 화면 표시용 기기/이력 관리(참조 코틀린 버전에서 이식) +
+ * 서버 실시간 전송(원본 MainActivity 로직 그대로 유지).
+ */
+public class BleScanner {
+
+    public interface Listener {
+        void onScanUpdate(Map<String, BeaconDevice> devices, Map<String, List<RssiPoint>> history);
+    }
+
+    private static final String LOG_TAG = "BLETEST";
+
+    private static volatile BleScanner instance;
+
+    public static BleScanner getInstance(Context context) {
+        if (instance == null) {
+            synchronized (BleScanner.class) {
+                if (instance == null) {
+                    instance = new BleScanner(context.getApplicationContext());
+                }
+            }
+        }
+        return instance;
+    }
+
+    // 서버로 전송할 대상 비콘 MAC 주소 (원본 코드 값 그대로 유지)
+    private static final String TARGET_MAC = "44:B1:76:1A:13:B2";
+
+    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+
+    private final BluetoothManager bluetoothManager;
+    private BluetoothAdapter bluetoothAdapter;
+    private BluetoothLeScanner bluetoothLeScanner;
+    private final WebSocketManager webSocketManager;
+
+    // 서버 전송용 원본 로직에서 쓰던 맵 (원본 그대로 유지)
+    private final HashMap<String, Object> bleRssiMap = new HashMap<>();
+
+    private final Map<String, BeaconDevice> scannedDevices = new LinkedHashMap<>();
+    private final Map<String, List<RssiPoint>> rssiHistory = new LinkedHashMap<>();
+    private static final int MAX_HISTORY_SIZE = 200;
+
+    private boolean isScanning = false;
+
+    private BleScanner(Context appContext) {
+        bluetoothManager = (BluetoothManager) appContext.getSystemService(Context.BLUETOOTH_SERVICE);
+        if (bluetoothManager != null) {
+            bluetoothAdapter = bluetoothManager.getAdapter();
+            if (bluetoothAdapter != null) {
+                bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
+            }
+        }
+        webSocketManager = new WebSocketManager("wss://robinson-stood-internet-strengthening.trycloudflare.com/ws");
+    }
+
+    public void addListener(Listener listener) {
+        listeners.add(listener);
+        listener.onScanUpdate(getScannedDevices(), getRssiHistory());
+    }
+
+    public void removeListener(Listener listener) {
+        listeners.remove(listener);
+    }
+
+    public synchronized Map<String, BeaconDevice> getScannedDevices() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(scannedDevices));
+    }
+
+    public synchronized Map<String, List<RssiPoint>> getRssiHistory() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(rssiHistory));
+    }
+
+    public boolean isBluetoothEnabled() {
+        return bluetoothAdapter != null && bluetoothAdapter.isEnabled();
+    }
+
+    @SuppressLint("MissingPermission")
+    public void startScan() {
+        if (isScanning) return;
+
+        if (bluetoothLeScanner == null) {
+            Log.d(LOG_TAG, "BluetoothLeScanner null");
+            return;
+        }
+
+        webSocketManager.connect();
+
+        ScanSettings settings = new ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build();
+        bluetoothLeScanner.startScan(null, settings, leScanCallback);
+        isScanning = true;
+    }
+
+    @SuppressLint("MissingPermission")
+    public void stopScan() {
+        if (!isScanning) return;
+        if (bluetoothLeScanner != null) {
+            bluetoothLeScanner.stopScan(leScanCallback);
+        }
+        webSocketManager.disconnect();
+        isScanning = false;
+    }
+
+    private final ScanCallback leScanCallback = new ScanCallback() {
+        @Override
+        @SuppressLint("MissingPermission")
+        public void onScanResult(int callbackType, ScanResult result) {
+            super.onScanResult(callbackType, result);
+
+            if (result == null || result.getDevice() == null) return;
+
+            String address = result.getDevice().getAddress();
+            int rssi = result.getRssi();
+
+            if (rssi == 127) return;
+
+            String name = null;
+            if (result.getScanRecord() != null) {
+                name = result.getScanRecord().getDeviceName();
+            }
+            if (name == null) name = result.getDevice().getName();
+            if (name == null) name = "unknown";
+
+            long now = System.currentTimeMillis();
+
+            // 화면 표시용 기기 목록/이력 갱신
+            BeaconDevice beacon = new BeaconDevice(address, name, rssi, now);
+            synchronized (BleScanner.this) {
+                scannedDevices.put(address, beacon);
+
+                List<RssiPoint> existing = rssiHistory.get(address);
+                List<RssiPoint> points = existing == null ? new ArrayList<>() : new ArrayList<>(existing);
+                points.add(new RssiPoint(now, rssi));
+                while (points.size() > MAX_HISTORY_SIZE) {
+                    points.remove(0);
+                }
+                rssiHistory.put(address, points);
+            }
+
+            // 서버 실시간 전송 (원본 로직 그대로 유지)
+            if (address.equals(TARGET_MAC)) bleRssiMap.put(address + "|" + name, rssi);
+
+            String log = name + ", " + address + ", " + rssi;
+            Log.d(LOG_TAG, log);
+
+            webSocketManager.send(bleRssiMap);
+
+            notifyListeners();
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            super.onScanFailed(errorCode);
+            isScanning = false;
+            Log.e(LOG_TAG, "스캔 실패: errorCode=" + errorCode);
+        }
+    };
+
+    // 스캔 결과가 올 때마다 바로 알린다 (그래프가 부드럽게 갱신되도록).
+    // 목록 화면처럼 잦은 갱신이 문제가 되는 화면은 각자 필요하면 자체적으로 갱신 빈도를 조절한다.
+    private void notifyListeners() {
+        Map<String, BeaconDevice> devices = getScannedDevices();
+        Map<String, List<RssiPoint>> history = getRssiHistory();
+        for (Listener listener : listeners) {
+            listener.onScanUpdate(devices, history);
+        }
+    }
+}
