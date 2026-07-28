@@ -38,7 +38,7 @@
         <activity android:name=".ui.FilterManageActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity"/>
-
+        <activity android:name=".ui.SurveyActivity" />
     </application>
 
 </manifest>

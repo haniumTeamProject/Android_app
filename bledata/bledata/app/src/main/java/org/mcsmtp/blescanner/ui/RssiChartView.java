@@ -26,7 +26,7 @@ import android.view.ScaleGestureDetector;
  * RSSI 그래프 (Compose Canvas 버전 이식): 원본 + 필터 겹쳐 그리기,
  * 구간 마킹 세로선/음영, 탭 crosshair + 각 시리즈 값 라벨.
  */
-public class RssiChartView extends View {
+public class                                      RssiChartView extends View {
 
     public interface OnTapListener {
         void onTap(long timestamp);

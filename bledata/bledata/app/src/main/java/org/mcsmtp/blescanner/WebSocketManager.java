@@ -18,18 +18,35 @@ import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
+
 public class WebSocketManager {
 
     private static final String TAG = "WebSocketManager";
     private WebSocket webSocket;
     private String serverUrl;
     private OkHttpClient client;
-
+    private JSONObject currentMeta = null;
     public WebSocketManager(String serverUrl) {
         this.serverUrl = serverUrl;
         this.client = new OkHttpClient.Builder()
                 .pingInterval(20, TimeUnit.SECONDS)
                 .build();
+    }
+    public void setSurveyMeta(JSONObject meta) {
+        this.currentMeta = meta;
+    }
+    public void markEvent(String event) {
+        if (currentMeta != null) {
+            try {
+                currentMeta.put("event", event);
+            } catch (JSONException e) {
+                Log.e(TAG, "이벤트 마킹 실패", e);
+            }
+        }
+    }
+
+    public void clearSurveyMeta() {
+        this.currentMeta = null;
     }
 
     public void connect() {
@@ -78,6 +95,9 @@ public class WebSocketManager {
             obj.put("timestamp", System.currentTimeMillis());
             for (Map.Entry<String, Object> entry : map.entrySet()) {
                 obj.put(entry.getKey(), entry.getValue());
+            }
+            if (currentMeta != null) {          // ← 이 3줄 추가
+                obj.put("meta", currentMeta);
             }
         } catch (JSONException e) {
             Log.e("error", "JSON 생성 실패", e);

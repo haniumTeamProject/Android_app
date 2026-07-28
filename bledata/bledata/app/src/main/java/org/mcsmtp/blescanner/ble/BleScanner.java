@@ -48,7 +48,10 @@ public class BleScanner {
     }
 
     // 서버로 전송할 대상 비콘 MAC 주소 (원본 코드 값 그대로 유지)
-    private static final String TARGET_MAC = "44:B1:76:1A:13:B2";
+    private static final java.util.Set<String> TARGET_MACS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "44:B1:76:1A:13:B2",   // ESP32-Beacon3
+            "44:B1:76:19:34:06"
+    ));
 
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 
@@ -74,7 +77,7 @@ public class BleScanner {
                 bluetoothLeScanner = bluetoothAdapter.getBluetoothLeScanner();
             }
         }
-        webSocketManager = new WebSocketManager("wss://robinson-stood-internet-strengthening.trycloudflare.com/ws");
+        webSocketManager = new WebSocketManager("wss://nearby-ideal-handhelds-marsh.trycloudflare.com/ws");
     }
 
     public void addListener(Listener listener) {
@@ -125,6 +128,23 @@ public class BleScanner {
         webSocketManager.disconnect();
         isScanning = false;
     }
+    // ↓ 추가
+    private void clearRssiMap() {
+        bleRssiMap.clear();
+    }
+    public void startSurvey(org.json.JSONObject meta) {
+        clearRssiMap();
+        webSocketManager.setSurveyMeta(meta);
+    }
+
+    public void markSurveyEvent(String event) {
+        // 측정 화면에서 [Waypoint 통과]/[정지시작]/[정지끝] 버튼 누를 때 호출
+        webSocketManager.markEvent(event); // WebSocketManager에 이 메서드도 추가 필요 (아래 참고)
+    }
+
+    public void stopSurvey() {
+        webSocketManager.clearSurveyMeta();
+    }
 
     private final ScanCallback leScanCallback = new ScanCallback() {
         @Override
@@ -163,7 +183,7 @@ public class BleScanner {
             }
 
             // 서버 실시간 전송 (원본 로직 그대로 유지)
-            if (address.equals(TARGET_MAC)) bleRssiMap.put(address + "|" + name, rssi);
+            if (TARGET_MACS.contains(address)) bleRssiMap.put(address + "|" + name, rssi);
 
             String log = name + ", " + address + ", " + rssi;
             Log.d(LOG_TAG, log);

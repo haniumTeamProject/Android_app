@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import org.mcsmtp.blescanner.ui.SurveyActivity;
 
 public class MainActivity extends AppCompatActivity implements BleScanner.Listener {
 
@@ -119,6 +120,10 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     public boolean onOptionsItemSelected(MenuItem item) {
         if (item.getItemId() == R.id.action_manage_filters) {
             startActivity(new Intent(this, FilterManageActivity.class));
+            return true;
+        }
+        if (item.getItemId() == R.id.action_survey) {          // ← 추가
+            startActivity(new Intent(this, SurveyActivity.class));
             return true;
         }
         return super.onOptionsItemSelected(item);

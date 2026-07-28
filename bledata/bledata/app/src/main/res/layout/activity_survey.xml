@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/surveyRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <RadioGroup
+            android:id="@+id/radioMode"
+            android:orientation="horizontal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+            <RadioButton android:id="@+id/radioStatic" android:text="정적" android:checked="true"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+            <RadioButton android:id="@+id/radioDynamic" android:text="동적"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        </RadioGroup>
+
+        <!-- 정적 측정용 입력 -->
+        <LinearLayout android:id="@+id/layoutStatic" android:orientation="vertical"
+            android:layout_width="match_parent" android:layout_height="wrap_content">
+            <EditText android:id="@+id/editPointId" android:hint="설치 장소 (예: 3층 엘리베이터 앞)"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            <Spinner android:id="@+id/spinnerDirection"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/layoutDynamic" android:orientation="vertical"
+            android:visibility="gone"
+            android:layout_width="match_parent" android:layout_height="wrap_content">
+            <EditText android:id="@+id/editPathId" android:hint="경로 ID (예: PATH-A)"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            <Spinner android:id="@+id/spinnerScenario"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            <EditText android:id="@+id/editWaypointName" android:hint="지금 지나는 waypoint 이름 (예: P07)"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+        </LinearLayout>
+
+        <EditText android:id="@+id/editDeviceId" android:hint="측정 단말 ID (예: dev1)"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnStartSurvey" android:text="측정 시작"
+            android:layout_marginTop="16dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <TextView android:id="@+id/textCountdown"
+            android:text=""
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginTop="8dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnWaypoint" android:text="Waypoint 통과"
+            android:layout_marginTop="8dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+        <Button android:id="@+id/btnStopStart" android:text="정지 시작"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+        <Button android:id="@+id/btnStopEnd" android:text="정지 끝"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnStopSurvey" android:text="측정 종료"
+            android:layout_marginTop="16dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    </LinearLayout>
+</ScrollView>

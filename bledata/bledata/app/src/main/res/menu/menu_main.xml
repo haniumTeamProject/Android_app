@@ -7,4 +7,9 @@
         android:title="@string/action_manage_filters"
         app:showAsAction="never" />
 
+    <item
+        android:id="@+id/action_survey"
+        android:title="측정 모드"
+        app:showAsAction="never" />
+
 </menu>
