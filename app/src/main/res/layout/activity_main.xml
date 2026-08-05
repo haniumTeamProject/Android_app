@@ -51,6 +51,62 @@
             android:layout_marginTop="12dp"
             android:background="#DDDDDD" />
 
+        <EditText
+            android:id="@+id/editMeasureLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/measure_label_hint"
+            android:inputType="text"
+            android:maxLines="1"
+            tools:text="3층 복도 A→B" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnMeasureStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/action_measure_start" />
+
+            <Button
+                android:id="@+id/btnMeasureMark"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:enabled="false"
+                android:text="@string/action_measure_mark" />
+
+            <Button
+                android:id="@+id/btnMeasureEnd"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:enabled="false"
+                android:text="@string/action_measure_end" />
+
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textMeasureStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            tools:text="측정 대기 중" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:background="#DDDDDD" />
+
     </LinearLayout>
 
     <androidx.recyclerview.widget.RecyclerView

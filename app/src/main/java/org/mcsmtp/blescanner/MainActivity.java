@@ -45,6 +45,12 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     private Button btnConnect;
     private TextView textConnectionStatus;
 
+    private EditText editMeasureLabel;
+    private Button btnMeasureStart;
+    private Button btnMeasureMark;
+    private Button btnMeasureEnd;
+    private TextView textMeasureStatus;
+
     // BLE 스캔 결과는 초당 여러 번 올 수 있는데, 그때마다 목록 전체를 다시 그리면
     // 항목을 탭하는 도중에 뷰가 교체되면서 탭 제스처가 취소될 수 있다. 목록 갱신만 최소 간격을 둔다.
     private static final long LIST_REFRESH_THROTTLE_MS = 300;
@@ -80,6 +86,17 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
 
         btnConnect.setOnClickListener(v -> startConnection());
 
+        editMeasureLabel = findViewById(R.id.editMeasureLabel);
+        btnMeasureStart = findViewById(R.id.btnMeasureStart);
+        btnMeasureMark = findViewById(R.id.btnMeasureMark);
+        btnMeasureEnd = findViewById(R.id.btnMeasureEnd);
+        textMeasureStatus = findViewById(R.id.textMeasureStatus);
+
+        btnMeasureStart.setOnClickListener(v -> startMeasurement());
+        btnMeasureMark.setOnClickListener(v -> markMeasurement());
+        btnMeasureEnd.setOnClickListener(v -> endMeasurement());
+        updateMeasureUi();
+
         if (hasAllPermissions()) {
             startConnection();
         } else {
@@ -110,10 +127,58 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         }
     }
 
+    // ---- 측정 구간 제어 ----
+    // 서버 화면에서 시작/종료를 누르는 대신, 실제로 걸어다니는 폰에서 구간을 지정한다.
+    // 폰이 웹소켓으로 제어 메시지를 보내면 서버가 그대로 중계하고 /monitor가 받아서 처리한다.
+    private void startMeasurement() {
+        String label = editMeasureLabel.getText().toString().trim();
+        String sessionId = bleScanner.startMeasurement(label);
+        if (sessionId == null) {
+            Toast.makeText(this, R.string.measure_need_connection, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        updateMeasureUi();
+    }
+
+    private void markMeasurement() {
+        // 표시 이름을 따로 안 적었으면 몇 번째 지점인지만 남긴다
+        String label = editMeasureLabel.getText().toString().trim();
+        int count = bleScanner.markMeasurement(label.isEmpty() ? "지점" : label);
+        if (count > 0) {
+            Toast.makeText(this, getString(R.string.measure_marked, count), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void endMeasurement() {
+        String finished = bleScanner.stopMeasurement();
+        updateMeasureUi();
+        if (finished != null && !finished.isEmpty()) {
+            Toast.makeText(this, getString(R.string.measure_finished, finished), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void updateMeasureUi() {
+        boolean measuring = bleScanner.isMeasuring();
+        btnMeasureStart.setEnabled(!measuring);
+        btnMeasureMark.setEnabled(measuring);
+        btnMeasureEnd.setEnabled(measuring);
+        editMeasureLabel.setEnabled(!measuring);
+
+        if (measuring) {
+            String label = bleScanner.getMeasureLabel();
+            textMeasureStatus.setText(getString(R.string.measure_running,
+                    label == null || label.isEmpty() ? "(이름 없음)" : label));
+        } else {
+            textMeasureStatus.setText(R.string.measure_idle);
+        }
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
         bleScanner.addListener(this);
+        // BleScanner가 싱글턴이라 화면을 나갔다 와도 측정 상태가 유지됨 — 버튼 상태를 실제 상태에 맞춘다
+        updateMeasureUi();
     }
 
     @Override
@@ -148,8 +213,11 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     }
 
     private void refreshDeviceList() {
+        // 예전엔 RSSI 내림차순으로 정렬해서, 신호 세기가 바뀔 때마다 항목 순서가 계속 뒤바뀌어
+        // 원하는 기기를 누르려는 순간 다른 항목이 그 자리로 올라오는 문제가 있었다.
+        // MAC 주소 기준 고정 정렬로 바꿔서 한 번 자리를 잡으면 위치가 변하지 않게 한다.
         List<BeaconDevice> sorted = new ArrayList<>(latestDevices.values());
-        Collections.sort(sorted, (a, b) -> Integer.compare(b.getRssi(), a.getRssi()));
+        Collections.sort(sorted, (a, b) -> a.getMacAddress().compareTo(b.getMacAddress()));
         adapter.submitList(sorted);
     }
 

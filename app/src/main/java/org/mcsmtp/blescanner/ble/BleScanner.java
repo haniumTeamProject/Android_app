@@ -10,6 +10,9 @@ import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.util.Log;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import org.mcsmtp.blescanner.WebSocketManager;
 import org.mcsmtp.blescanner.data.BeaconDevice;
 import org.mcsmtp.blescanner.data.RssiPoint;
@@ -50,6 +53,9 @@ public class BleScanner {
     // 웹소켓 주소를 따로 안 정해줬을 때 쓰는 기본값 (MainActivity에서 입력 후 setServerUrl로 바꿀 수 있음)
     private static final String DEFAULT_SERVER_URL = "wss://hanium.mcsmtp.org/ws";
 
+    // 서버로 전송할 비콘 이름 접두사 (테스트용 — 이 접두사로 시작하는 이름만 웹소켓으로 보냄)
+    private static final String SERVER_SEND_NAME_PREFIX = "ESP32";
+
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 
     private final BluetoothManager bluetoothManager;
@@ -88,6 +94,106 @@ public class BleScanner {
 
     public boolean isScanning() {
         return isScanning;
+    }
+
+    // ---- 측정 구간 제어 ----
+    // 서버(/monitor)에서 버튼을 누르는 대신, 실제로 걸어다니는 폰에서 구간을 지정할 수 있게
+    // "type":"measure" 형태의 제어 JSON을 웹소켓으로 보낸다. RSSI 전송과 같은 연결을 쓴다.
+    private static final String MEASURE_TYPE = "measure";
+
+    private String measureSessionId = null;
+    private String measureLabel = null;
+    private int markCount = 0;
+
+    public boolean isMeasuring() {
+        return measureSessionId != null;
+    }
+
+    public String getMeasureLabel() {
+        return measureLabel;
+    }
+
+    /** 측정 시작을 서버에 알린다. 성공하면 세션 ID를 반환, 실패하면 null. */
+    public String startMeasurement(String label) {
+        if (!webSocketManager.isConnected()) return null;
+
+        String sessionId = newSessionId();
+        JSONObject payload = baseMeasurePayload("start", sessionId);
+        if (payload == null) return null;
+        try {
+            payload.put("label", label == null ? "" : label);
+        } catch (JSONException e) {
+            Log.e(LOG_TAG, "측정 시작 JSON 생성 실패", e);
+            return null;
+        }
+
+        if (!webSocketManager.sendControl(payload)) return null;
+
+        measureSessionId = sessionId;
+        measureLabel = label;
+        markCount = 0;
+        return sessionId;
+    }
+
+    /** 측정 중 특정 지점(비콘 통과 등)을 표시한다. 표시된 누적 개수를 반환. */
+    public int markMeasurement(String label) {
+        if (!isMeasuring()) return 0;
+
+        JSONObject payload = baseMeasurePayload("mark", measureSessionId);
+        if (payload == null) return markCount;
+        try {
+            payload.put("label", label == null ? "" : label);
+        } catch (JSONException e) {
+            Log.e(LOG_TAG, "지점 표시 JSON 생성 실패", e);
+            return markCount;
+        }
+
+        if (webSocketManager.sendControl(payload)) markCount += 1;
+        return markCount;
+    }
+
+    /** 측정 종료를 서버에 알린다. 종료된 측정 이름을 반환. */
+    public String stopMeasurement() {
+        if (!isMeasuring()) return null;
+
+        JSONObject payload = baseMeasurePayload("end", measureSessionId);
+        if (payload != null) {
+            try {
+                payload.put("label", measureLabel == null ? "" : measureLabel);
+                payload.put("markCount", markCount);
+            } catch (JSONException e) {
+                Log.e(LOG_TAG, "측정 종료 JSON 생성 실패", e);
+            }
+            webSocketManager.sendControl(payload);
+        }
+
+        String finished = measureLabel;
+        measureSessionId = null;
+        measureLabel = null;
+        markCount = 0;
+        return finished;
+    }
+
+    private JSONObject baseMeasurePayload(String event, String sessionId) {
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("type", MEASURE_TYPE);
+            obj.put("event", event);
+            obj.put("sessionId", sessionId);
+            obj.put("timestamp", System.currentTimeMillis());
+            obj.put("device", android.os.Build.MODEL);
+            return obj;
+        } catch (JSONException e) {
+            Log.e(LOG_TAG, "측정 제어 JSON 생성 실패", e);
+            return null;
+        }
+    }
+
+    // 서버가 여러 폰의 측정을 구분할 수 있도록 시각 + 난수로 세션 ID를 만든다
+    private String newSessionId() {
+        return new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(new java.util.Date())
+                + "-" + Integer.toHexString((int) (Math.random() * 0xFFFF));
     }
 
     public void addListener(Listener listener) {
@@ -192,13 +298,16 @@ public class BleScanner {
                 rssiHistory.put(address, points);
             }
 
-            // 서버 실시간 전송 (특정 MAC만 걸러내던 필터 제거, 스캔된 전체 기기 전송)
-            bleRssiMap.put(address + "|" + name, rssi);
+            // 서버 실시간 전송 — 테스트용으로 이름이 "ESP32"로 시작하는 비콘만 보냄.
+            // (화면 목록/이력에는 위에서 이미 전체 기기를 다 넣었으므로 앱에서는 전부 보이고, 웹소켓 전송만 걸러짐)
+            if (name.startsWith(SERVER_SEND_NAME_PREFIX)) {
+                bleRssiMap.put(address + "|" + name, rssi);
 
-            String log = name + ", " + address + ", " + rssi;
-            Log.d(LOG_TAG, log);
+                String log = name + ", " + address + ", " + rssi;
+                Log.d(LOG_TAG, log);
 
-            webSocketManager.send(bleRssiMap);
+                webSocketManager.send(bleRssiMap);
+            }
 
             notifyListeners();
         }

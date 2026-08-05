@@ -90,6 +90,24 @@ public class WebSocketManager {
         return false;
     }
 
+    /**
+     * RSSI 데이터가 아닌 제어용 JSON(측정 시작/종료 등)을 그대로 전송한다.
+     * RSSI 전송(send)과 달리 bleRssiMap 병합이나 timestamp 자동 추가를 하지 않고,
+     * 호출한 쪽이 만든 JSON을 손대지 않고 보낸다.
+     */
+    public boolean sendControl(JSONObject payload) {
+        if (webSocket == null || payload == null) {
+            Log.w(TAG, "제어 메시지 전송 실패 (연결 없음): " + payload);
+            return false;
+        }
+        Log.d(TAG, "제어 메시지 전송: " + payload);
+        return webSocket.send(payload.toString());
+    }
+
+    public boolean isConnected() {
+        return webSocket != null;
+    }
+
     public void disconnect() {
         if (webSocket != null) {
             webSocket.close(1000, "정상 종료");
