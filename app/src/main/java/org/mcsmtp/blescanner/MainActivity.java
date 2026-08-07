@@ -6,10 +6,13 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -30,6 +33,7 @@ import org.mcsmtp.blescanner.ui.FilterManageActivity;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.mcsmtp.blescanner.ui.SurveyActivity;
 
@@ -44,6 +48,10 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     private EditText editServerUrl;
     private Button btnConnect;
     private TextView textConnectionStatus;
+
+    private EditText editDeviceFilter;
+    // 목록 표시용 검색어 (쉼표로 여러 개 = OR). 서버 전송 대상과는 무관하게 화면에만 적용된다.
+    private List<String> deviceFilterTerms = Collections.emptyList();
 
     private EditText editMeasureLabel;
     private Button btnMeasureStart;
@@ -86,11 +94,26 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
 
         btnConnect.setOnClickListener(v -> startConnection());
 
+        editDeviceFilter = findViewById(R.id.editDeviceFilter);
+        editDeviceFilter.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) {
+                deviceFilterTerms = parseFilterTerms(s.toString());
+                refreshDeviceList();   // 검색어는 즉시 반영 (스캔 결과를 기다리지 않도록)
+            }
+        });
+
         editMeasureLabel = findViewById(R.id.editMeasureLabel);
         btnMeasureStart = findViewById(R.id.btnMeasureStart);
         btnMeasureMark = findViewById(R.id.btnMeasureMark);
         btnMeasureEnd = findViewById(R.id.btnMeasureEnd);
         textMeasureStatus = findViewById(R.id.textMeasureStatus);
+
+        CheckBox checkSpeech = findViewById(R.id.checkSpeech);
+        checkSpeech.setChecked(bleScanner.getSpeechGuide().isEnabled());
+        checkSpeech.setOnCheckedChangeListener(
+                (buttonView, isChecked) -> bleScanner.getSpeechGuide().setEnabled(isChecked));
 
         btnMeasureStart.setOnClickListener(v -> startMeasurement());
         btnMeasureMark.setOnClickListener(v -> markMeasurement());
@@ -187,6 +210,8 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         bleScanner.removeListener(this);
         if (isFinishing()) {
             bleScanner.stopScan();
+            // 앱을 끝내는 경우에만 TTS 자원을 반납한다 (화면 전환만으로 끊기면 안내가 끊기므로)
+            bleScanner.getSpeechGuide().shutdown();
         }
     }
 
@@ -216,9 +241,35 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         // 예전엔 RSSI 내림차순으로 정렬해서, 신호 세기가 바뀔 때마다 항목 순서가 계속 뒤바뀌어
         // 원하는 기기를 누르려는 순간 다른 항목이 그 자리로 올라오는 문제가 있었다.
         // MAC 주소 기준 고정 정렬로 바꿔서 한 번 자리를 잡으면 위치가 변하지 않게 한다.
-        List<BeaconDevice> sorted = new ArrayList<>(latestDevices.values());
-        Collections.sort(sorted, (a, b) -> a.getMacAddress().compareTo(b.getMacAddress()));
-        adapter.submitList(sorted);
+        List<BeaconDevice> shown = new ArrayList<>();
+        for (BeaconDevice device : latestDevices.values()) {
+            if (matchesDeviceFilter(device)) shown.add(device);
+        }
+        Collections.sort(shown, (a, b) -> a.getMacAddress().compareTo(b.getMacAddress()));
+        adapter.submitList(shown);
+    }
+
+    // 쉼표로 구분된 검색어를 소문자로 정리 (빈 항목은 버림)
+    private List<String> parseFilterTerms(String raw) {
+        List<String> terms = new ArrayList<>();
+        if (raw == null) return terms;
+        for (String piece : raw.split(",")) {
+            String term = piece.trim().toLowerCase(Locale.US);
+            if (!term.isEmpty()) terms.add(term);
+        }
+        return terms;
+    }
+
+    // 검색어가 비어 있으면 전체 표시, 아니면 이름이나 MAC에 하나라도 걸리면 표시(OR)
+    private boolean matchesDeviceFilter(BeaconDevice device) {
+        if (deviceFilterTerms.isEmpty()) return true;
+
+        String name = device.getName() == null ? "" : device.getName().toLowerCase(Locale.US);
+        String mac = device.getMacAddress() == null ? "" : device.getMacAddress().toLowerCase(Locale.US);
+        for (String term : deviceFilterTerms) {
+            if (name.contains(term) || mac.contains(term)) return true;
+        }
+        return false;
     }
 
     @Override

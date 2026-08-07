@@ -92,6 +92,14 @@
 
         </LinearLayout>
 
+        <CheckBox
+            android:id="@+id/checkSpeech"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:checked="true"
+            android:text="@string/speech_guide_toggle" />
+
         <TextView
             android:id="@+id/textMeasureStatus"
             android:layout_width="match_parent"
@@ -106,6 +114,16 @@
             android:layout_height="1dp"
             android:layout_marginTop="12dp"
             android:background="#DDDDDD" />
+
+        <EditText
+            android:id="@+id/editDeviceFilter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/device_filter_hint"
+            android:inputType="text"
+            android:maxLines="1"
+            tools:text="ESP32" />
 
     </LinearLayout>
 

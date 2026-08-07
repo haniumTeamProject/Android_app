@@ -6,6 +6,8 @@
     <string name="status_disconnected">연결 안 됨</string>
     <string name="status_connecting">연결 시도 중: %1$s</string>
 
+    <string name="device_filter_hint">이름/MAC 검색 (쉼표로 여러 개, 비우면 전체)</string>
+
     <string name="measure_label_hint">측정 이름 (예: 3층 복도 A→B)</string>
     <string name="action_measure_start">측정 시작</string>
     <string name="action_measure_mark">지점 표시</string>
@@ -15,6 +17,7 @@
     <string name="measure_finished">측정 종료됨: %1$s</string>
     <string name="measure_need_connection">먼저 서버에 연결해주세요</string>
     <string name="measure_marked">지점 표시 전송됨 (%1$d번째)</string>
+    <string name="speech_guide_toggle">비콘 전환 음성 안내</string>
 
     <string name="action_manage_filters">필터 관리</string>
     <string name="action_delete">삭제</string>

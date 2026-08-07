@@ -21,11 +21,17 @@ import okhttp3.WebSocketListener;
 
 public class WebSocketManager {
 
+    /** 서버에서 내려온 메시지를 받아보는 콜백. OkHttp 백그라운드 스레드에서 호출된다. */
+    public interface MessageListener {
+        void onServerMessage(String text);
+    }
+
     private static final String TAG = "WebSocketManager";
     private WebSocket webSocket;
     private String serverUrl;
     private OkHttpClient client;
     private JSONObject currentMeta = null;
+    private MessageListener messageListener;
     public WebSocketManager(String serverUrl) {
         this.serverUrl = serverUrl;
         this.client = new OkHttpClient.Builder()
@@ -34,6 +40,10 @@ public class WebSocketManager {
     }
     public void setServerUrl(String serverUrl) {
         this.serverUrl = serverUrl;
+    }
+
+    public void setMessageListener(MessageListener listener) {
+        this.messageListener = listener;
     }
 
     public String getServerUrl() {
@@ -68,6 +78,8 @@ public class WebSocketManager {
             @Override
             public void onMessage(@NonNull WebSocket webSocket, @NonNull String text) {
                 Log.d(TAG, "서버 메시지 : " + text);
+                MessageListener listener = messageListener;
+                if (listener != null) listener.onServerMessage(text);
             }
 
             @Override

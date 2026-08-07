@@ -16,6 +16,7 @@ import org.json.JSONObject;
 import org.mcsmtp.blescanner.WebSocketManager;
 import org.mcsmtp.blescanner.data.BeaconDevice;
 import org.mcsmtp.blescanner.data.RssiPoint;
+import org.mcsmtp.blescanner.speech.SpeechGuide;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,6 +64,11 @@ public class BleScanner {
     private BluetoothLeScanner bluetoothLeScanner;
     private final WebSocketManager webSocketManager;
 
+    // 서버가 내려준 안내 문장을 읽어주는 TTS.
+    // 판정은 서버가 하고 앱은 받은 문장을 읽기만 한다 — 문구를 바꿔도 앱을 다시 빌드할 필요가 없고,
+    // /monitor를 안 열어놔도 동작한다.
+    private final SpeechGuide speechGuide = new SpeechGuide();
+
     // 서버 전송용 원본 로직에서 쓰던 맵 (원본 그대로 유지)
     private final HashMap<String, Object> bleRssiMap = new HashMap<>();
 
@@ -81,6 +87,30 @@ public class BleScanner {
             }
         }
         webSocketManager = new WebSocketManager(DEFAULT_SERVER_URL);
+
+        // 서버가 비콘 전환을 판단해서 내려주는 안내 메시지를 받아 음성으로 읽어준다
+        speechGuide.init(appContext);
+        webSocketManager.setMessageListener(this::onServerMessage);
+    }
+
+    // ---- 서버 안내(음성) ----
+
+    public SpeechGuide getSpeechGuide() {
+        return speechGuide;
+    }
+
+    private void onServerMessage(String text) {
+        if (text == null || text.isEmpty()) return;
+        try {
+            JSONObject msg = new JSONObject(text);
+            if (!"guide".equals(msg.optString("type"))) return;   // RSSI 중계분 등은 무시
+
+            String speech = msg.optString("speech", "");
+            if (!speech.isEmpty()) speechGuide.speak(speech);
+        } catch (JSONException e) {
+            // RSSI 브로드캐스트 등 안내가 아닌 메시지도 같이 들어오므로 조용히 넘어간다
+            Log.v(LOG_TAG, "안내 메시지 아님: " + text);
+        }
     }
 
     // 앱 실행 후 사용자가 직접 입력한 웹소켓 주소로 바꿔 씀 (연결돼 있었다면 재연결 필요 — MainActivity에서 stopScan 후 startScan으로 처리)
@@ -301,12 +331,21 @@ public class BleScanner {
             // 서버 실시간 전송 — 테스트용으로 이름이 "ESP32"로 시작하는 비콘만 보냄.
             // (화면 목록/이력에는 위에서 이미 전체 기기를 다 넣었으므로 앱에서는 전부 보이고, 웹소켓 전송만 걸러짐)
             if (name.startsWith(SERVER_SEND_NAME_PREFIX)) {
-                bleRssiMap.put(address + "|" + name, rssi);
+                String key = address + "|" + name;
+                bleRssiMap.put(key, rssi);   // 누적 맵은 Survey 기능 호환을 위해 그대로 유지
 
                 String log = name + ", " + address + ", " + rssi;
                 Log.d(LOG_TAG, log);
 
-                webSocketManager.send(bleRssiMap);
+                // 이번에 실제로 스캔된 비콘 하나만 보낸다.
+                // 예전에는 누적 맵(bleRssiMap) 전체를 매번 보냈는데, 그러면 아직 다시 스캔되지
+                // 않은 비콘의 옛 값이 계속 반복 전송된다. 서버의 칼만 필터는 그 반복값을 매번
+                // 새 측정으로 받아들여 같은 값으로 계속 수렴하고, 그러다 실제 새 값이 오면
+                // 방향이 꺾이면서 톱니 모양 파형이 생긴다(폰을 가만히 둬도 나타남).
+                // 추세 계산도 "움직임"이 아니라 "재스캔까지 걸린 시간"을 재게 되어 오판의 원인이 된다.
+                HashMap<String, Object> single = new HashMap<>();
+                single.put(key, rssi);
+                webSocketManager.send(single);
             }
 
             notifyListeners();
