@@ -26,12 +26,31 @@ public class WebSocketManager {
         void onServerMessage(String text);
     }
 
+    /** 연결 상태 변화 알림 (화면 표시용). 백그라운드 스레드에서 호출될 수 있다. */
+    public interface StatusListener {
+        void onStatus(String text, boolean connected);
+    }
+
     private static final String TAG = "WebSocketManager";
-    private WebSocket webSocket;
+
+    // 재연결 간격 — 끊길 때마다 두 배씩 늘리되 상한을 둔다
+    private static final long RETRY_BASE_MS = 1000;
+    private static final long RETRY_MAX_MS = 15000;
+
+    // OkHttp 콜백(백그라운드)에서 null로 바꾸고 스캔 콜백(다른 스레드)에서 읽으므로 volatile.
+    // 아니면 죽은 소켓 참조가 다른 스레드에 계속 보일 수 있다.
+    private volatile WebSocket webSocket;
     private String serverUrl;
     private OkHttpClient client;
     private JSONObject currentMeta = null;
     private MessageListener messageListener;
+    private StatusListener statusListener;
+
+    // connect()를 부른 뒤 disconnect() 전까지는 계속 붙어 있어야 한다는 의도.
+    // 이 값이 true인 동안에는 끊겨도 자동으로 다시 붙는다.
+    private volatile boolean shouldConnect = false;
+    private int retryCount = 0;
+    private final android.os.Handler retryHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     public WebSocketManager(String serverUrl) {
         this.serverUrl = serverUrl;
         this.client = new OkHttpClient.Builder()
@@ -67,31 +86,78 @@ public class WebSocketManager {
         this.currentMeta = null;
     }
 
+    public void setStatusListener(StatusListener listener) {
+        this.statusListener = listener;
+    }
+
+    private void notifyStatus(String text, boolean connected) {
+        StatusListener l = statusListener;
+        if (l != null) l.onStatus(text, connected);
+    }
+
     public void connect() {
+        shouldConnect = true;
+        retryCount = 0;
+        openSocket();
+    }
+
+    private void openSocket() {
+        if (!shouldConnect) return;
+
+        notifyStatus("연결 시도 중...", false);
         Request request = new Request.Builder().url(serverUrl).build();
+
         webSocket = client.newWebSocket(request, new WebSocketListener() {
             @Override
-            public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
-                Log.d(TAG,"연결 성공");
+            public void onOpen(@NonNull WebSocket ws, @NonNull Response response) {
+                Log.d(TAG, "연결 성공");
+                retryCount = 0;
+                notifyStatus("연결됨", true);
             }
 
             @Override
-            public void onMessage(@NonNull WebSocket webSocket, @NonNull String text) {
+            public void onMessage(@NonNull WebSocket ws, @NonNull String text) {
                 Log.d(TAG, "서버 메시지 : " + text);
                 MessageListener listener = messageListener;
                 if (listener != null) listener.onServerMessage(text);
             }
 
             @Override
-            public void onClosing(@NonNull WebSocket webSocket, int code, @NonNull String reason) {
+            public void onClosing(@NonNull WebSocket ws, int code, @NonNull String reason) {
                 Log.d(TAG, "연결 종료 중 : " + reason);
             }
 
             @Override
-            public void onFailure(@NonNull WebSocket webSocket, @NonNull Throwable t, @Nullable Response response) {
+            public void onClosed(@NonNull WebSocket ws, int code, @NonNull String reason) {
+                Log.d(TAG, "연결 종료됨 : " + reason);
+                scheduleReconnect("연결 끊김");
+            }
+
+            @Override
+            public void onFailure(@NonNull WebSocket ws, @NonNull Throwable t, @Nullable Response response) {
+                // 예전에는 로그만 찍고 끝냈다. 그러면 webSocket 참조는 남아있지만 죽은 객체라
+                // 이후 send()가 계속 false만 반환하면서 아무 표시 없이 전송이 영구히 멈춘다.
                 Log.e(TAG, "연결 실패 : " + t.getMessage());
+                scheduleReconnect("연결 실패");
             }
         });
+    }
+
+    /** 끊긴 소켓을 버리고, 계속 붙어 있어야 하는 상태면 간격을 늘려가며 다시 시도한다. */
+    private void scheduleReconnect(String reason) {
+        webSocket = null;                 // 죽은 소켓으로 계속 보내지 않도록 확실히 버린다
+        if (!shouldConnect) {
+            notifyStatus("연결 안 됨", false);
+            return;
+        }
+
+        long delay = Math.min(RETRY_BASE_MS * (1L << Math.min(retryCount, 4)), RETRY_MAX_MS);
+        retryCount++;
+        notifyStatus(reason + " — " + (delay / 1000) + "초 후 재연결", false);
+        Log.d(TAG, "재연결 예약: " + delay + "ms 후 (" + retryCount + "번째)");
+
+        retryHandler.removeCallbacksAndMessages(null);
+        retryHandler.postDelayed(this::openSocket, delay);
     }
 
     public boolean send(HashMap<String, Object> map) {
@@ -121,10 +187,16 @@ public class WebSocketManager {
     }
 
     public void disconnect() {
+        // 의도적으로 끊는 경우이므로 자동 재연결을 먼저 꺼야 한다.
+        // (안 그러면 onClosed에서 곧바로 다시 붙어버림)
+        shouldConnect = false;
+        retryHandler.removeCallbacksAndMessages(null);
+
         if (webSocket != null) {
             webSocket.close(1000, "정상 종료");
             webSocket = null;
         }
+        notifyStatus("연결 안 됨", false);
     }
 
     private String buildJson(HashMap<String, Object> map) {

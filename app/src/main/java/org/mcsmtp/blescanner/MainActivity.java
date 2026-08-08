@@ -11,6 +11,7 @@ import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -49,6 +50,11 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     private Button btnConnect;
     private TextView textConnectionStatus;
 
+    // 화면 상단 상태줄에 표시할 값들
+    private String wsStatusText = "연결 안 됨";
+    private int scanRestartCount = 0;
+    private final Handler statusHandler = new Handler(Looper.getMainLooper());
+
     private EditText editDeviceFilter;
     // 목록 표시용 검색어 (쉼표로 여러 개 = OR). 서버 전송 대상과는 무관하게 화면에만 적용된다.
     private List<String> deviceFilterTerms = Collections.emptyList();
@@ -72,6 +78,10 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // 실측 도구라 화면이 꺼지면 안 된다. 화면이 꺼지면 안드로이드가 BLE 스캔을
+        // 제한하거나 Doze로 네트워크를 끊어서 데이터가 조용히 멈춘다.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
         RecyclerView recyclerView = findViewById(R.id.recyclerDevices);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         adapter = new DeviceListAdapter(device -> {
@@ -93,6 +103,19 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         textConnectionStatus.setText(R.string.status_disconnected);
 
         btnConnect.setOnClickListener(v -> startConnection());
+
+        // 연결 상태와 스캔 상태를 실제로 화면에 반영한다.
+        // 예전에는 "연결 시도 중"에서 영영 안 바뀌어서, 끊겨도 알 방법이 없었다.
+        bleScanner.setConnectionStatusListener((text, connected) ->
+                runOnUiThread(() -> {
+                    wsStatusText = text;
+                    updateStatusLine();
+                }));
+        bleScanner.setScanStatusListener((msSinceLast, restartCount) ->
+                runOnUiThread(() -> {
+                    scanRestartCount = restartCount;
+                    updateStatusLine();
+                }));
 
         editDeviceFilter = findViewById(R.id.editDeviceFilter);
         editDeviceFilter.addTextChangedListener(new TextWatcher() {
@@ -126,6 +149,41 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
             requestMissingPermissions();
         }
     }
+
+    // 연결 상태 + 마지막 수신 경과 + 스캔 재시작 횟수를 한 줄로 보여준다.
+    // 현장에서 "지금 데이터가 오고 있는지"를 폰만 보고 알 수 있어야 하므로 1초마다 갱신한다.
+    private void updateStatusLine() {
+        if (textConnectionStatus == null) return;
+
+        StringBuilder sb = new StringBuilder(wsStatusText);
+        long since = bleScanner.getMsSinceLastScanResult();
+        if (bleScanner.isScanning()) {
+            if (since < 0) sb.append(" · 스캔 대기");
+            else if (since < 2000) sb.append(" · 수신 중");
+            else sb.append(String.format(Locale.US, " · %.0f초째 수신 없음", since / 1000.0));
+        }
+        if (scanRestartCount > 0) sb.append(" · 재시작 ").append(scanRestartCount).append("회");
+
+        // 패킷 수를 같이 보여준다. 개수가 0이면 "중복 0%"가 아니라 "받은 게 없음"이다.
+        if (bleScanner.isScanning()) {
+            int dup = bleScanner.getDuplicatePercent();
+            int cnt = bleScanner.getPacketCount();
+            if (dup < 0) sb.append(" · 패킷 0개");
+            else sb.append(" · 중복 ").append(dup).append("% (").append(cnt).append("개)");
+        }
+
+        String issue = bleScanner.getLastScanIssue();
+        if (issue != null && !issue.isEmpty()) sb.append("\n⚠ ").append(issue);
+
+        textConnectionStatus.setText(sb.toString());
+    }
+
+    private final Runnable statusTicker = new Runnable() {
+        @Override public void run() {
+            updateStatusLine();
+            statusHandler.postDelayed(this, 1000);
+        }
+    };
 
     // 입력창의 웹소켓 주소로 (재)연결. 이미 스캔 중이었으면 먼저 끊고 새 주소로 다시 시작한다.
     private void startConnection() {
@@ -202,12 +260,15 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         bleScanner.addListener(this);
         // BleScanner가 싱글턴이라 화면을 나갔다 와도 측정 상태가 유지됨 — 버튼 상태를 실제 상태에 맞춘다
         updateMeasureUi();
+        statusHandler.removeCallbacks(statusTicker);
+        statusHandler.post(statusTicker);
     }
 
     @Override
     protected void onStop() {
         super.onStop();
         bleScanner.removeListener(this);
+        statusHandler.removeCallbacks(statusTicker);
         if (isFinishing()) {
             bleScanner.stopScan();
             // 앱을 끝내는 경우에만 TTS 자원을 반납한다 (화면 전환만으로 끊기면 안내가 끊기므로)
