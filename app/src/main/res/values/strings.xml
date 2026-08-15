@@ -19,6 +19,20 @@
     <string name="measure_marked">지점 표시 전송됨 (%1$d번째)</string>
     <string name="speech_guide_toggle">비콘 전환 음성 안내</string>
 
+    <!-- 음성 목적지 -->
+    <string name="action_voice_destination">🎤 목적지 말하기</string>
+    <string name="action_voice_listening">듣는 중… (누르면 취소)</string>
+    <string name="destination_idle">목적지를 말해보세요 (예: 407호, 화장실)</string>
+    <string name="destination_listening">듣는 중…</string>
+    <string name="destination_heard">들은 말: %1$s</string>
+    <string name="destination_thinking">%1$s — 확인 중…</string>
+    <string name="destination_resolved">목적지: %1$s</string>
+    <string name="destination_asking">되묻는 중: %1$s</string>
+    <string name="destination_not_found">목적지를 찾지 못했습니다</string>
+    <string name="destination_need_connection">먼저 서버에 연결해주세요</string>
+    <string name="destination_no_recognizer">이 기기에서 음성 인식을 쓸 수 없습니다</string>
+    <string name="destination_need_mic">마이크 권한이 필요합니다</string>
+
     <string name="action_manage_filters">필터 관리</string>
     <string name="action_delete">삭제</string>
     <string name="action_add_filter">필터 추가</string>

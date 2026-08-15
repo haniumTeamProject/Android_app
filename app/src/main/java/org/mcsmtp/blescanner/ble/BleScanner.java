@@ -57,6 +57,19 @@ public class BleScanner {
     // 서버로 전송할 비콘 이름 접두사 (테스트용 — 이 접두사로 시작하는 이름만 웹소켓으로 보냄)
     private static final String SERVER_SEND_NAME_PREFIX = "ESP32";
 
+    // iBeacon 광고에서 major/minor 를 뽑기 위한 값.
+    //
+    // 제조사 데이터의 회사 ID 0x004C(Apple) 아래에 iBeacon 규격이 실린다.
+    //
+    //   [0]=0x02 [1]=0x15  [2..17]=UUID(16)  [18..19]=major  [20..21]=minor  [22]=txPower
+    //
+    // 서버는 **major/minor 로 비콘을 가린다.** major = 100 + 층번호 라서 층까지 한 번에
+    // 나오고, minor 는 펌웨어에 새겨 넣는 논리 번호라 기기를 교체해도 그대로다.
+    // (MAC 은 기기를 바꾸면 달라져서 그때마다 DB 를 다시 입력해야 한다)
+    private static final int APPLE_COMPANY_ID = 0x004C;
+    private static final byte IBEACON_TYPE = 0x02;
+    private static final byte IBEACON_LENGTH = 0x15;
+
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 
     private final BluetoothManager bluetoothManager;
@@ -295,13 +308,79 @@ public class BleScanner {
         if (text == null || text.isEmpty()) return;
         try {
             JSONObject msg = new JSONObject(text);
-            if (!"guide".equals(msg.optString("type"))) return;   // RSSI 중계분 등은 무시
+            String type = msg.optString("type");
+
+            if (DESTINATION_TYPE.equals(type)) {
+                // 목적지 응답은 화면 쪽에서 처리한다. 되묻기면 안내를 읽은 뒤
+                // 마이크를 다시 켜야 하는데, 그 흐름은 여기(백그라운드)가 아니라
+                // 화면이 들고 있는 편이 자연스럽다.
+                notifyDestination(msg);
+                return;
+            }
+
+            if (!"guide".equals(type)) return;   // RSSI 중계분 등은 무시
 
             String speech = msg.optString("speech", "");
             if (!speech.isEmpty()) speechGuide.speak(speech);
         } catch (JSONException e) {
             // RSSI 브로드캐스트 등 안내가 아닌 메시지도 같이 들어오므로 조용히 넘어간다
             Log.v(LOG_TAG, "안내 메시지 아님: " + text);
+        }
+    }
+
+    // ---- 음성 목적지 ----
+    // 폰은 받아적은 문자열만 올려보내고, 어느 장소인지 판단하는 일은 서버가 한다.
+    // 그래야 별칭이나 판정 기준을 고쳐도 앱을 다시 빌드하지 않아도 된다.
+    private static final String DESTINATION_TYPE = "destination";
+
+    /** 서버의 목적지 응답을 받는 콜백. 웹소켓 스레드에서 불린다. */
+    public interface DestinationListener {
+        void onDestinationMessage(JSONObject msg);
+    }
+
+    private volatile DestinationListener destinationListener;
+
+    public void setDestinationListener(DestinationListener l) {
+        this.destinationListener = l;
+    }
+
+    private void notifyDestination(JSONObject msg) {
+        DestinationListener l = destinationListener;
+        if (l != null) l.onDestinationMessage(msg);
+    }
+
+    /** 받아적은 목적지를 서버에 보낸다. */
+    public boolean requestDestination(String heard) {
+        return sendDestination("resolve", heard);
+    }
+
+    /** 되물었을 때의 대답("두 번째")을 보낸다. */
+    public boolean chooseDestination(String heard) {
+        return sendDestination("choose", heard);
+    }
+
+    /** 되묻기를 그만둔다. */
+    public boolean cancelDestination() {
+        return sendDestination("cancel", "");
+    }
+
+    private boolean sendDestination(String event, String heard) {
+        if (!webSocketManager.isConnected()) {
+            Log.w(LOG_TAG, "목적지 요청 실패 (연결 없음): " + heard);
+            return false;
+        }
+        try {
+            JSONObject obj = new JSONObject();
+            obj.put("type", DESTINATION_TYPE);
+            obj.put("event", event);
+            obj.put("text", heard == null ? "" : heard);
+            obj.put("requestId", newSessionId());
+            obj.put("timestamp", System.currentTimeMillis());
+            obj.put("device", android.os.Build.MODEL);
+            return webSocketManager.sendControl(obj);
+        } catch (JSONException e) {
+            Log.e(LOG_TAG, "목적지 JSON 생성 실패", e);
+            return false;
         }
     }
 
@@ -316,6 +395,11 @@ public class BleScanner {
 
     public boolean isScanning() {
         return isScanning;
+    }
+
+    /** 서버 웹소켓이 붙어 있는지. 스캔 중인지와는 별개다. */
+    public boolean isConnectedToServer() {
+        return webSocketManager.isConnected();
     }
 
     // ---- 측정 구간 제어 ----
@@ -584,18 +668,77 @@ public class BleScanner {
                 String key = address + "|" + name;
                 bleRssiMap.put(key, rssi);   // 누적 맵은 Survey 기능 호환을 위해 그대로 유지
 
+                // major/minor 를 같이 올린다.
+                //
+                // **키 형식(MAC|이름)은 그대로 둔다.** 서버와 /monitor 가 그 키로
+                // 필터 상태·그래프 계열을 구분하고 있어서, 여기서 바꾸면 전부 어긋난다.
+                // 그래서 rssi 는 지금처럼 보내고 식별자만 따로 얹는다.
+                //
+                // 키 이름을 "_ids" 로 한 이유: 서버는 payload 의 숫자 값을 전부 RSSI 로
+                // 훑는데(handler._process_message), 이건 dict 라 그 루프가 건너뛴다.
+                // 즉 **지금 서버를 안 고쳐도 깨지지 않는다.**
+                int[] ids = parseIBeacon(result);
+                // 로그를 남긴다. 안 남기면 "안 왔다"와 "못 읽었다"를 구분할 수 없어
+                // 앱을 다시 깔았는지부터 의심하게 된다.
+                Log.d(LOG_TAG, "iBeacon " + name + " → "
+                        + (ids == null ? "major/minor 못 읽음 (iBeacon 광고가 아님)"
+                                       : "major=" + ids[0] + " minor=" + ids[1]));
+                HashMap<String, Object> single = new HashMap<>();
+                single.put(key, rssi);
+                if (ids != null) {
+                    try {
+                        JSONObject one = new JSONObject();
+                        one.put("major", ids[0]);
+                        one.put("minor", ids[1]);
+                        JSONObject idMap = new JSONObject();
+                        idMap.put(key, one);
+                        single.put("_ids", idMap);
+                    } catch (JSONException e) {
+                        Log.e(LOG_TAG, "식별자 JSON 생성 실패", e);
+                    }
+                }
+
                 // 이번에 실제로 스캔된 비콘 하나만 보낸다.
                 // 예전에는 누적 맵(bleRssiMap) 전체를 매번 보냈는데, 그러면 아직 다시 스캔되지
                 // 않은 비콘의 옛 값이 계속 반복 전송된다. 서버의 칼만 필터는 그 반복값을 매번
                 // 새 측정으로 받아들여 같은 값으로 계속 수렴하고, 그러다 실제 새 값이 오면
                 // 방향이 꺾이면서 톱니 모양 파형이 생긴다(폰을 가만히 둬도 나타남).
                 // 추세 계산도 "움직임"이 아니라 "재스캔까지 걸린 시간"을 재게 되어 오판의 원인이 된다.
-                HashMap<String, Object> single = new HashMap<>();
-                single.put(key, rssi);
                 webSocketManager.send(single);
             }
 
             notifyListeners();
+        }
+
+        /**
+         * iBeacon 광고에서 major/minor 를 뽑는다. iBeacon 이 아니면 null.
+         *
+         * 길이와 머리 두 바이트(0x02 0x15)를 반드시 확인한다. 0x004C 는 애플이 쓰는
+         * 회사 ID 라서 iBeacon 이 아닌 애플 기기(에어팟·핸드오프 등)도 같은 자리에
+         * 자기 데이터를 싣는다. 확인 없이 읽으면 엉뚱한 바이트를 major 로 쓴다.
+         */
+        private int[] parseIBeacon(ScanResult result) {
+            if (result.getScanRecord() == null) return null;
+            android.util.SparseArray<byte[]> all =
+                    result.getScanRecord().getManufacturerSpecificData();
+            if (all == null) return null;
+
+            // **회사 ID 를 정해놓고 찾지 않는다.**
+            //
+            // 규격대로면 애플의 0x004C 지만, 펌웨어가 그 값을 바이트 순서를 뒤집어
+            // 넣으면 0x4C00 으로 잡힌다(우리 beacon.ino 가 setManufacturerId(0x4C00)).
+            // 어느 쪽인지 확인하려고 기기를 다시 굽는 것보다, 들어온 것 중에서
+            // iBeacon 모양인 것을 찾는 편이 확실하고 펌웨어가 바뀌어도 안 깨진다.
+            for (int i = 0; i < all.size(); i++) {
+                byte[] md = all.valueAt(i);
+                if (md == null || md.length < 23) continue;
+                if (md[0] != IBEACON_TYPE || md[1] != IBEACON_LENGTH) continue;
+
+                int major = ((md[18] & 0xFF) << 8) | (md[19] & 0xFF);
+                int minor = ((md[20] & 0xFF) << 8) | (md[21] & 0xFF);
+                return new int[]{major, minor};
+            }
+            return null;
         }
 
         @Override

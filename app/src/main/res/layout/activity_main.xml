@@ -115,6 +115,32 @@
             android:layout_marginTop="12dp"
             android:background="#DDDDDD" />
 
+        <!-- 음성 목적지 -->
+        <!-- 버튼을 크게 잡았다. 시각장애인이 화면을 보지 않고 눌러야 하므로
+             손가락으로 더듬어 찾을 수 있을 만큼 커야 한다. -->
+        <Button
+            android:id="@+id/btnVoiceDestination"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="12dp"
+            android:text="@string/action_voice_destination"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/textDestinationStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            tools:text="목적지: 407호" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:background="#DDDDDD" />
+
         <EditText
             android:id="@+id/editDeviceFilter"
             android:layout_width="match_parent"

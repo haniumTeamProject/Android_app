@@ -24,9 +24,11 @@ import androidx.core.app.ActivityCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.json.JSONObject;
 import org.mcsmtp.blescanner.ble.BleScanner;
 import org.mcsmtp.blescanner.data.BeaconDevice;
 import org.mcsmtp.blescanner.data.RssiPoint;
+import org.mcsmtp.blescanner.speech.VoiceInput;
 import org.mcsmtp.blescanner.ui.DeviceDetailActivity;
 import org.mcsmtp.blescanner.ui.DeviceListAdapter;
 import org.mcsmtp.blescanner.ui.FilterManageActivity;
@@ -64,6 +66,19 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     private Button btnMeasureMark;
     private Button btnMeasureEnd;
     private TextView textMeasureStatus;
+
+    // ---- 음성 목적지 ----
+    private final VoiceInput voiceInput = new VoiceInput();
+    private Button btnVoiceDestination;
+    private TextView textDestinationStatus;
+
+    // 서버가 되물은 상태인가. true면 다음 발화는 새 목적지가 아니라 "두 번째" 같은 선택이다.
+    private boolean awaitingChoice = false;
+
+    // 못 알아들었을 때 자동으로 다시 듣는 횟수. 무한 반복을 막는다 —
+    // 주변이 시끄러우면 계속 실패하는데, 그때 마이크가 영원히 켜져 있으면 안 된다.
+    private static final int MAX_AUTO_RETRY = 1;
+    private int autoRetryCount = 0;
 
     // BLE 스캔 결과는 초당 여러 번 올 수 있는데, 그때마다 목록 전체를 다시 그리면
     // 항목을 탭하는 도중에 뷰가 교체되면서 탭 제스처가 취소될 수 있다. 목록 갱신만 최소 간격을 둔다.
@@ -142,6 +157,8 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         btnMeasureMark.setOnClickListener(v -> markMeasurement());
         btnMeasureEnd.setOnClickListener(v -> endMeasurement());
         updateMeasureUi();
+
+        setupVoiceDestination();
 
         if (hasAllPermissions()) {
             startConnection();
@@ -254,6 +271,152 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         }
     }
 
+    // ---- 음성 목적지 ----
+    //
+    // 전체 흐름:
+    //   [마이크 버튼] → 받아적기 → 서버(destination/resolve) → 응답
+    //        └ resolved  : 안내를 읽고 끝
+    //        └ ambiguous : 안내를 다 읽은 뒤 자동으로 다시 듣기 → destination/choose
+    //        └ notFound  : 안내를 다 읽은 뒤 한 번만 다시 듣기
+    //
+    // 어느 장소인지 판단하는 일은 전부 서버가 한다. 폰은 받아적은 문자열을 올리고
+    // 돌아온 speech를 읽어줄 뿐이다. 그래서 판정 기준을 고쳐도 앱을 다시 안 빌드해도 된다.
+    private void setupVoiceDestination() {
+        btnVoiceDestination = findViewById(R.id.btnVoiceDestination);
+        textDestinationStatus = findViewById(R.id.textDestinationStatus);
+
+        voiceInput.init(this);
+        voiceInput.setListener(new VoiceInput.Listener() {
+            @Override public void onHeard(String text) {
+                textDestinationStatus.setText(getString(R.string.destination_thinking, text));
+                boolean sent = awaitingChoice
+                        ? bleScanner.chooseDestination(text)
+                        : bleScanner.requestDestination(text);
+                if (!sent) {
+                    awaitingChoice = false;
+                    speakAndShow(getString(R.string.destination_need_connection));
+                }
+            }
+
+            @Override public void onFailed(String message) {
+                // 못 알아들은 경우에만 한 번 더 듣는다. 권한/기기 문제는 다시 해도 똑같다.
+                boolean retry = VoiceInput.isRetryable(message) && autoRetryCount < MAX_AUTO_RETRY;
+                if (retry) autoRetryCount++;
+                else resetDestinationFlow();
+
+                textDestinationStatus.setText(message);
+                bleScanner.getSpeechGuide().speak(message, retry ? voiceInput::listen : null);
+            }
+
+            @Override public void onListeningChanged(boolean listening) {
+                btnVoiceDestination.setText(listening
+                        ? R.string.action_voice_listening : R.string.action_voice_destination);
+                if (listening) textDestinationStatus.setText(R.string.destination_listening);
+            }
+        });
+
+        bleScanner.setDestinationListener(msg -> runOnUiThread(() -> onDestinationMessage(msg)));
+
+        btnVoiceDestination.setOnClickListener(v -> {
+            if (voiceInput.isListening()) {   // 듣는 중에 다시 누르면 취소
+                voiceInput.cancel();
+                resetDestinationFlow();
+                textDestinationStatus.setText(R.string.destination_idle);
+                return;
+            }
+            startVoiceDestination();
+        });
+
+        if (!voiceInput.isAvailable()) {
+            btnVoiceDestination.setEnabled(false);
+            textDestinationStatus.setText(R.string.destination_no_recognizer);
+        } else {
+            textDestinationStatus.setText(R.string.destination_idle);
+        }
+    }
+
+    private void startVoiceDestination() {
+        if (!bleScanner.isConnectedToServer()) {
+            speakAndShow(getString(R.string.destination_need_connection));
+            return;
+        }
+        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            textDestinationStatus.setText(R.string.destination_need_mic);
+            ActivityCompat.requestPermissions(this,
+                    new String[]{android.Manifest.permission.RECORD_AUDIO}, PERMISSION_REQUEST_CODE);
+            return;
+        }
+
+        resetDestinationFlow();
+        // 안내를 읽는 도중에 마이크를 켜면 그 소리를 그대로 받아적으므로 먼저 끊는다
+        bleScanner.getSpeechGuide().stop();
+        voiceInput.listen();
+    }
+
+    private void resetDestinationFlow() {
+        awaitingChoice = false;
+        autoRetryCount = 0;
+    }
+
+    /** 서버의 목적지 응답 처리. 메인 스레드에서 불린다. */
+    private void onDestinationMessage(JSONObject msg) {
+        String event = msg.optString("event");
+        String speech = msg.optString("speech", "");
+
+        if ("ambiguous".equals(event)) {
+            // 되묻기 — 안내를 "다 읽은 뒤에" 마이크를 켜야 한다.
+            // 읽는 중에 켜면 TTS 소리를 그대로 받아적는다.
+            awaitingChoice = true;
+            autoRetryCount = 0;
+            textDestinationStatus.setText(getString(R.string.destination_asking,
+                    describeCandidates(msg)));
+            bleScanner.getSpeechGuide().speak(speech, voiceInput::listen);
+            return;
+        }
+
+        if ("resolved".equals(event)) {
+            resetDestinationFlow();
+            JSONObject lm = msg.optJSONObject("landmark");
+            String name = lm == null ? "" : lm.optString("name", "");
+            textDestinationStatus.setText(getString(R.string.destination_resolved, name));
+            bleScanner.getSpeechGuide().speak(speech);
+            return;
+        }
+
+        if ("notFound".equals(event)) {
+            boolean retry = autoRetryCount < MAX_AUTO_RETRY;
+            if (retry) autoRetryCount++;
+            else resetDestinationFlow();
+            textDestinationStatus.setText(R.string.destination_not_found);
+            bleScanner.getSpeechGuide().speak(speech, retry ? voiceInput::listen : null);
+            return;
+        }
+
+        // cancelled, error 등 — 흐름만 되돌린다
+        resetDestinationFlow();
+        if (!speech.isEmpty()) bleScanner.getSpeechGuide().speak(speech);
+    }
+
+    private String describeCandidates(JSONObject msg) {
+        org.json.JSONArray arr = msg.optJSONArray("candidates");
+        if (arr == null || arr.length() == 0) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject c = arr.optJSONObject(i);
+            if (c == null) continue;
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(c.optString("name", ""));
+        }
+        return sb.toString();
+    }
+
+    private void speakAndShow(String message) {
+        textDestinationStatus.setText(message);
+        bleScanner.getSpeechGuide().speak(message);
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -269,8 +432,16 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
         super.onStop();
         bleScanner.removeListener(this);
         statusHandler.removeCallbacks(statusTicker);
+
+        // 화면을 벗어나면 마이크는 반드시 끈다. 켜둔 채로 두면 배터리도 먹고,
+        // 다른 화면에서 한 말이 목적지로 들어가버린다.
+        voiceInput.cancel();
+        resetDestinationFlow();
+
         if (isFinishing()) {
             bleScanner.stopScan();
+            bleScanner.setDestinationListener(null);
+            voiceInput.shutdown();
             // 앱을 끝내는 경우에만 TTS 자원을 반납한다 (화면 전환만으로 끊기면 안내가 끊기므로)
             bleScanner.getSpeechGuide().shutdown();
         }
@@ -392,7 +563,21 @@ public class MainActivity extends AppCompatActivity implements BleScanner.Listen
     public void onRequestPermissionsResult(int requestCode, @androidx.annotation.NonNull String[] permissions,
                                             @androidx.annotation.NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE && hasAllPermissions()) {
+        if (requestCode != PERMISSION_REQUEST_CODE) return;
+
+        // 마이크 버튼을 눌러서 권한을 요청한 경우라면, 허용되는 즉시 듣기를 이어간다.
+        // 사용자가 버튼을 한 번 더 눌러야 한다면 화면을 못 보는 사람에게는 불친절하다.
+        for (int i = 0; i < permissions.length; i++) {
+            if (!android.Manifest.permission.RECORD_AUDIO.equals(permissions[i])) continue;
+            if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                startVoiceDestination();
+            } else {
+                speakAndShow(getString(R.string.destination_need_mic));
+            }
+            return;
+        }
+
+        if (hasAllPermissions()) {
             startConnection();
         }
     }
